@@ -41,29 +41,29 @@ module VarnishAgent
   def VarnishAgent.groups()
     return {
       'Request rates' => {
-        'metrics' => %w(cache_hit cache_hitpass cache_miss backend_conn backend_unhealthy client_req client_conn)
+        'metrics' => %w(cache_hit cache_hitpass cache_miss backend_conn backend_unhealthy client_req sess_conn)
       },
       'Hit rates' => {
         'metrics' => %w(client_req cache_hit cache_miss cache_hitpass)
       },
-      'Backend Traffic' => {
-        'metrics' => %w(backend_conn backend_unhealthy backend_busy backend_fail backend_reuse backend_recycle backend_unused backend_req)
+      'Backend Connections' => {
+        'metrics' => %w(backend_conn backend_unhealthy backend_busy backend_fail backend_reuse backend_recycle backend_toolate backend_retry)
       },
-      'Number of objects' => {
-        'metrics' => %w(n_object n_objcore n_objhead)
+      'Objects' => {
+        'metrics' => %w(n_object n_objectcore n_objecthead n_expired n_lru_nuked n_lru_moved)
       },
       'Transfer rates' => {
-        'metrics' => %w(s_bodybytes s_hdrbytes)
+        'metrics' => %w(s_req_bodybytes s_req_hdrbytes s_resp_bodybytes s_resp_hdrbytes)
       },
       'Thread status' => {
-        'metrics' => %w(n_wrk n_wrk_create n_wrk_failed n_wrk_max n_wrk_overflow n_wrk_drop)
+        'metrics' => %w(threads threads_limited threads_created threads_destroyed threads_failed thread_queue_len sess_queued sess_dropped)
       },
       'Memory usage' => {
-        'metrics' => %w(sm_balloc sma_nbytes sms_nbytes),
-        'regex_metrics' => [ /^(SM[AF]\.[^.]+)\.g_(bytes|space)/ ]
+        'metrics' => %w(sms_balloc sma_nbytes sms_nbytes),
+        'regex_metrics' => [ /^(SM[AF]\.[^.]+)\.g_(bytes|space|alloc)/ ]
       },
       'Misbehaviour' => {
-        'metrics' => %w(client_drop backend_unhealthy fetch_failed backend_busy n_wrk_failed n_wrk_max n_wrk_drop n_wrk_lqueue losthdr n_objoverflow esi_errors esi_warnings client_drop_late accept_fail),
+        'metrics' => %w(sess_drop sess_fail backend_unhealthy fetch_failed backend_busy backend_fail threads_failed sess_dropped sess_queued losthdr esi_errors esi_warnings),
         'regex_metrics' => [/^(SM[AF]\.[^.]+)\.c_fail/ ]
       },
     }
@@ -78,6 +78,9 @@ module VarnishAgent
     IO::popen(cmd.join(' '), mode="r") do |io|
       r += io.read()
     end
+
+    #r = File.read 'output.xml'
+
     doc = REXML::Document.new(r)
     r = {}
     doc.elements.each('varnishstat/stat') do |i|
@@ -91,57 +94,58 @@ module VarnishAgent
     agent_guid "com.varnish-software.newrelic-stat"
     agent_version '0.0.5'
     agent_human_labels("Varnish") { "#{@name||"varnish"}[#{@vname||"default"}]"}
-    agent_config_options :vname
+    agent_config_options :name, :vname
 
 #    metric_human_label { "Varnish[#{agent.instance_label}]: #{config[:description]}" }
 
     def unit(name)
       case name.to_s
-        when /^client_(conn|drop)/
-        "connections"
-        when /^client_(req|hit|miss)/
-        "requests"
-        when /^cache_(hit|miss)/
-        "requests"
-        when /^backend_/
-        "connections"
-        when /^fetch_/
-        "fetch"
-        when /^n_(obj|expired|lru)/
-        "objects"
-        when /^n_wrk/
-        "threads"
-        when /^n_backend/
-        "backends"
-        when /^n_/
-        "structs"
-        when /^s_sess/
-        "sessions"
-        when /^s_(req|pipe|pass|fetch)/
-        "requests"
-        when /(bytes|balloc)$/
-        "bytes"
-        when /g_space$/
-        "bytes"
-        when /^sess/
-        "sessions"
-        when /^losthdr/
-        "requests"
-        when /^esi_errors/
-        "errors"
-        when /^esi_warnings/
-        "warnings"
-        when /^accept_fail/
-        "accepts"
-        when /c_fail$/
-        "allocations"
-        else
+
+      when /^thread/
+        'threads'
+
+      when /alloc$/, /bytes$/, /g_space$/
+        'bytes'
+
+      when /^sess_/
+        'sessions'
+
+      when /^backend_/, /^s_(req|pipe|pass|fetch)/
+        'connections'
+
+      when 'client_req', /^cache_(hit|miss)/
+        'requests'
+
+      when /^fetch_/
+        'fetches'
+
+      when /^n_(obj|expired|lru)/
+        'objects'
+
+      when /^n_backend/
+        'backends'
+
+      when /^n_/
+        'structs'
+
+      when 'esi_errors', 'losthdr'
+        'errors'
+
+      when 'esi_warnings'
+        'warnings'
+
+      when /c_fail$/
+        'allocations'
+
+      else
         raise "Unknown unit: #{name}"
-        end
+      end
     end
 
     def poll_cycle
       stats = VarnishAgent.varnishstat(@vname)
+      #pp stats
+      #raise 'inspecting'
       VarnishAgent.groups.each do |gname, group|
         group["metrics"].each do |metric|
           stat = stats[metric]
@@ -168,8 +172,10 @@ module VarnishAgent
     def report(name, description, stat)
       if stat["flag"] == "a"
         report_counter_metric description, unit(name) + "/sec", stat["value"].to_i
+        #puts "#{description} \t #{unit(name)}/sec \t #{stat["value"].to_i}"
       else
         report_metric description, unit(name), stat["value"].to_i
+        #puts "#{description} \t #{unit(name)} \t #{stat["value"].to_i}"
       end
     end
 
@@ -184,7 +190,7 @@ module VarnishAgent
     end
   end
 
-  NewRelic::Plugin::Setup.install_agent :varnish,VarnishAgent
+  NewRelic::Plugin::Setup.install_agent :varnish, VarnishAgent
 
   #
   # Launch the agent (never returns)
